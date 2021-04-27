@@ -29,6 +29,33 @@
 #include "ns3/traffic-control-module.h"
 #include "ns3/flow-monitor-module.h"
 
+/*
+ *     Point                 Point
+ *		⭕--------------------⭕ 💽 🚦
+ *	   Datarate = 1Mbps      TrafficControlHelper
+ *	   Delay = 1ms           FifoQueueDisc
+ *	   DropTailQueue
+ *
+ *	   🦙 = 300
+ *	   🐄 = 330
+ *
+ *	   DropTailQueue holds 1 packet
+ *	   FifoQueueDisc holds queueSize packets
+ *
+ *     No channel errors, however: errors if queueSize is low enough
+ *
+ *	   Configuration includes:
+ *	   * lambda
+ *	   * mu
+ *	   * queueSize
+ *	   * simulationTime
+ *
+ *	   Outputted files:
+ *	   * ms-lab7-0-0.pcap
+ *	   * ms-lab7-1-0.pcap
+ *	   * queue.tr
+ */
+
 using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE ("nineth");
@@ -51,8 +78,19 @@ static void GenerateTraffic (Ptr<Socket> socket, Ptr<ExponentialRandomVariable> 
 	Simulator::Schedule (pktInterval, &GenerateTraffic, socket, randomSize, randomTime); //Schedule next packet generation
 }
 
+static void GenerateTrafficMD1(Ptr<Socket> socket, Ptr<ExponentialRandomVariable> randomTime, double mu) {
+	const uint32_t size = (1000000.0/(8*mu)-30);
+	socket->Send(Create<Packet> (size));
+
+	Time pktInterval = Seconds(randomTime->GetValue());
+	Simulator::Schedule(pktInterval, &GenerateTrafficMD1, socket, randomTime, mu);
+}
+
 int main (int argc, char *argv[])
 {
+	RngSeedManager::SetRun(1);
+	RngSeedManager::SetSeed(1);
+
 	double simulationTime = 10; //seconds
 	double mu = 100;
 	double lambda = 150;
@@ -116,7 +154,8 @@ int main (int argc, char *argv[])
 	Ptr<ExponentialRandomVariable> randomSize = CreateObject<ExponentialRandomVariable> ();
 	randomSize->SetAttribute ("Mean", DoubleValue (mean));
 
-	Simulator::ScheduleWithContext (source->GetNode ()->GetId (), Seconds (1.0), &GenerateTraffic, source, randomSize, randomTime);
+	//Simulator::ScheduleWithContext (source->GetNode ()->GetId (), Seconds (1.0), &GenerateTraffic, source, randomSize, randomTime);
+	Simulator::ScheduleWithContext (source->GetNode ()->GetId (), Seconds (1.0), &GenerateTrafficMD1, source, randomTime, mu);
 
 	FlowMonitorHelper flowmon;
 	Ptr<FlowMonitor> monitor = flowmon.InstallAll();
