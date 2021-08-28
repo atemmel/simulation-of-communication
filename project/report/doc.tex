@@ -1,0 +1,100 @@
+\documentclass[a4paper, titlepage,12pt]{article}
+
+\usepackage[margin=3.7cm]{geometry}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[swedish,english]{babel}
+\usepackage{csquotes}
+\usepackage[hyphens]{url}
+\usepackage{amsmath,amssymb,amsthm, amsfonts}
+\usepackage[backend=biber,citestyle=ieee]{biblatex}
+\usepackage[yyyymmdd]{datetime}
+\usepackage{titlesec} 
+\usepackage{graphicx}
+\usepackage{listings}
+
+\usepackage{xcolor}
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codepurple}{rgb}{0.5,0,0.5}
+\definecolor{backcolor}{rgb}{0.97,0.97,0.97}
+
+\lstdefinestyle{mystyle}{
+	commentstyle=\color{codegreen},
+	keywordstyle=\color{magenta},
+	numberstyle=\color{gray}\ttfamily\footnotesize,
+	backgroundcolor=\color{backcolor},
+	basicstyle=\ttfamily\footnotesize,
+	stringstyle=\color{codepurple},
+	numbers=left,
+	tabsize=4
+}
+
+\lstset{style=mystyle}
+
+
+\iffalse
+\titleformat{\subsection}[runin]
+  {\normalfont\large\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}[runin]
+  {\normalfont\normalsize\bfseries}{\thesubsubsection}{1em}{}
+\fi
+
+\title{Performance Analysis and Simulation of Communication Systems: Project A}
+
+\author{Adam Temmel (adte1700) \& Fredrik Sellgren (frse1700)}
+
+\begin{document}
+	\maketitle
+	\section{PRNG and Random Variables}
+		\subsection{Create a function that implements a linear congruential generator (LCG), accepting as input the parameters: seed, m, a,and c.}
+			We implemented our LCG as a class in order to keep it somewhat similiar to the STL generators. The code used is as follows:
+
+			\begin{figure}[h!]
+				\begin{lstlisting}[language=c++]
+class Lcg {
+public:
+	using seed_t = uint32_t;
+
+	Lcg(seed_t seed, seed_t m = 100, seed_t a = 13, 
+		seed_t c = 1) 
+		: seed(seed), m(m), a(a), c(c) {}
+
+	seed_t operator()() {
+		seed = ((a * seed) + c) % m;
+		return seed;
+	}
+
+	// These are kept public to make it easier to change 
+	// them later in the lab, a more authentic generator
+	// would probably keep them private.
+	seed_t seed, m, a, c;
+};
+				\end{lstlisting}
+				\caption{LCG Class}
+				\label{fig:lcgimpl}
+			\end{figure}
+
+
+
+		\subsection{Generate 1000 values uniformly distributed in the range [0,1] using your PRNG. For this case use m=100, a=13 c=1and seed =1;}
+		\subsection{Compare the distribution of your values with the distribution of values generated using the \\
+		\lstinline{UniformRandomVariable()} of ns-3.}
+		\subsection{Comment on the difference in the results and propose values of m, a,and cwhich gives you better results.}
+		\subsection{What PRNG does ns-3 use?  What method does ns-3 use to generate a normal random variable?}
+		\subsection{Using the \lstinline{time} system command of Linux compare the execution time for the generation of the uniform distribution using your function and ns-3 function}
+		\begin{figure}[h!]
+			\begin{lstlisting}
+# our class: 
+time ./waf --run scratch/project  2.54s user 0.20s 
+system 107% cpu 2.547 total
+# their class: 
+time ./waf --run scratch/project  2.59s user 0.17s 
+system 107% cpu 2.556 total
+			\end{lstlisting}
+			\caption{The results from timing a program that generated 1000 random numbers using \lstinline{time}}
+
+			As we can see, our implementation is slightly faster (around $0.01$ seconds) than the Ns3 implementation.
+		\end{figure}
+		\subsection{Write a second function that generatesan exponential distributionwith mean $\beta>0$ from auniform distributiongenerated using the LCG;Choose one of the methods for generating RV covered in the course and motivate your choice with respect to the specific task.}
+		\subsection{Compare your exponential distribution with ns-3 \lstinline{ExponentialRandomVariable()} and the theoretical expression of the probability density function.}
+\end{document}

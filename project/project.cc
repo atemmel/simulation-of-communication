@@ -2,10 +2,12 @@
 #include "ns3/network-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/point-to-point-module.h"
+#include "ns3/csma-module.h"
 #include "ns3/traffic-control-module.h"
 #include "ns3/flow-monitor-module.h"
 #include "ns3/applications-module.h"
 #include "ns3/netanim-module.h"
+#include "ns3/mobility-helper.h"
 
 #include <algorithm>
 #include <cmath>
@@ -48,7 +50,7 @@ void testPrng() {
 	// their class: time ./waf --run scratch/project  2.59s user 0.17s system 107% cpu 2.556 total
 
 	//Ptr<UniformRandomVariable> urv = CreateObject<UniformRandomVariable> ();
-	Ptr<ExponentialRandomVariable> erv = CreateObject<ExponentialRandomVariable> ();
+	Ptr<ExponentialRandomVariable> erv = CreateObject<ExponentialRandomVariable>();
 
 	constexpr size_t n = 1000;
 	constexpr double lambda = 300.;
@@ -95,19 +97,22 @@ void testPrng() {
 	*/
 }
 
+std::map<Address, int> packetDistribution;
+
 static void receivedMsg (Ptr<Socket> router, Ptr<Socket> client, Ptr<const Packet> p, const Address &srcAddress , const Address &dstAddress)
 {
 	//std::cout << "::::: A packet received at the Server! Time:   " << Simulator::Now ().GetSeconds () << std::endl;
+	packetDistribution[srcAddress]++;
 
 	Ptr<UniformRandomVariable> rand=CreateObject<UniformRandomVariable>();
 
 	if(rand->GetValue(0.0,1.0) <= 0.3) {
 		//std::cout << "::::: Transmitting from Server to Router   "  << std::endl;
-		router->Send (Create<Packet> (p->GetSize ()));
+		router->Send (Create<Packet> (p->GetSize()));
 	}
 	else {	// P(0.7)
 		//std::cout << "::::: Transmitting from GW to Controller   "  << std::endl;
-		client->SendTo(Create<Packet> (p->GetSize ()),0,srcAddress);
+		client->SendTo(Create<Packet> (p->GetSize()),0,srcAddress);
 	}
 }
 
@@ -117,23 +122,34 @@ uint32_t globalSum = 0;
 void tcPacketsInQueue (QueueDiscContainer qdiscs, Ptr<OutputStreamWrapper> stream)
 {
 	//Get current queue size value and save to file.
+	/*
 	uint32_t currentSum = 0;
 	for(uint32_t i = 0; i < qdiscs.GetN(); i++) {
-		Ptr<QueueDisc> p = qdiscs.Get (1);
+		Ptr<QueueDisc> p = qdiscs.Get (i);
 		uint32_t size = p->GetNPackets(); 
 		currentSum += size;
 		globalSum += size;
 	}
-	globalN++;
-
 	std::cout << currentSum << '\n';
+	*/
 
-	*stream->GetStream () << Simulator::Now ().GetSeconds () << "\t" << currentSum << std::endl;
+	auto disc = qdiscs.Get(qdiscs.GetN() - 4);
+	uint32_t currentSum = disc->GetNPackets();
+	//std::cout << currentSum << '\n';
+	globalSum += currentSum;
+	globalN++;
+	//std::cout << currentSum << '\n';
+	//auto stats = disc->GetStats();
+	//std::cout << "Enq: " << stats.nTotalEnqueuedPackets << " Deq: " << stats.nTotalDequeuedPackets << " Delta: " << stats.nTotalEnqueuedPackets - stats.nTotalDequeuedPackets << '\n';
+	//std::cout << "Turkmeck: " << (double)globalSum / (double)globalN << '\n';
+	//std::cout << globalSum << ' ' << globalN << '\n';
+
+	*stream->GetStream() << Simulator::Now().GetSeconds () << "\t" << currentSum << std::endl;
 }
 
 static void generateTraffic (Ptr<Socket> socket, Ptr<ExponentialRandomVariable> randomSize,	Ptr<ExponentialRandomVariable> randomTime)
 {
-	uint32_t pktSize = randomSize->GetInteger (); //Get random value for packet size
+	uint32_t pktSize = randomSize->GetInteger(); //Get random value for packet size
 	//std::cout << "::::: A packet is generate at Node "<< socket->GetNode ()->GetId () << " with size " << pktSize <<" bytes ! Time:   " << Simulator::Now ().GetSeconds () << std::endl;
 
 	
@@ -141,10 +157,10 @@ static void generateTraffic (Ptr<Socket> socket, Ptr<ExponentialRandomVariable> 
 	if(pktSize<12){
 		pktSize=12;
 	}
+	
+	socket->Send(Create<Packet>(pktSize));
 
-	socket->Send (Create<Packet> (pktSize));
-
-	Time pktInterval = Seconds(randomTime->GetValue ()); //Get random value for next packet generation time 
+	Time pktInterval = Seconds(randomTime->GetValue()); //Get random value for next packet generation time 
 	Simulator::Schedule(pktInterval, &generateTraffic, socket, randomSize, randomTime); //Schedule next packet generation
 }
 
@@ -166,7 +182,11 @@ public:
 			}
 		}
 		nodes.Create(max + 1);
-		for(const auto &b : list) {
+		bindings.assign(list);
+	}
+	
+	void installAsPtp() {
+		for(const auto &b : bindings) {
 			devices.Add(connect(b));
 		}
 
@@ -176,10 +196,38 @@ public:
 
 		tch.SetRootQueueDisc ("ns3::FifoQueueDisc", "MaxSize", StringValue (queueSize+"p"));
 
-		/*
-		for(auto & device : devices) {
-			qdiscs.Add(tch.Install(device));
-		}*/
+		qdiscs.Add(tch.Install(devices));
+
+		const std::string base = "10.0.";
+		const std::string end = ".0";
+		const std::string mask = "255.255.255.0";
+
+		for(uint32_t i = 0; i < devices.GetN()/2; i++) {
+			ipv4.SetBase(Ipv4Address((base + std::to_string(i) + end).c_str()), mask.c_str());
+			ipv4container.Add(ipv4.Assign({devices.Get(i*2), devices.Get(i*2+1)}));
+		}
+
+		Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
+	}
+
+	void installAsCsma() {
+		CsmaHelper csma;
+		for(const auto& b : bindings) {
+			csma.SetChannelAttribute("DataRate", StringValue(b.datarate));
+			csma.SetQueue ("ns3::DropTailQueue", "MaxSize", StringValue ("1p"));
+			NodeContainer newNodes;
+			newNodes.Add(nodes.Get(b.first));
+			newNodes.Add(nodes.Get(b.second));
+			auto installation = csma.Install(newNodes);
+			devices.Add(installation);
+		}
+
+		stack.Install(nodes);
+
+		std::string queueSize = "10000";
+
+		tch.SetRootQueueDisc ("ns3::FifoQueueDisc", "MaxSize", StringValue (queueSize+"p"));
+
 		qdiscs.Add(tch.Install(devices));
 
 		const std::string base = "10.0.";
@@ -195,10 +243,21 @@ public:
 	}
 
 	NetDeviceContainer connect(const Binding &binding) {
+		
 		PointToPointHelper ptp;
 		ptp.SetDeviceAttribute("DataRate", StringValue(binding.datarate));
 		ptp.SetQueue ("ns3::DropTailQueue", "MaxSize", StringValue ("1p"));
 		return ptp.Install(nodes.Get(binding.first), nodes.Get(binding.second));
+		
+		/*
+		CsmaHelper csma;
+		csma.SetChannelAttribute("DataRate", StringValue(binding.datarate));
+		csma.SetQueue("ns3::DropTailQueue", "MaxSize", StringValue("1p"));
+		NodeContainer csmaNodes;
+		csmaNodes.Add(nodes.Get(binding.first));
+		csmaNodes.Add(nodes.Get(binding.second));
+		return csma.Install(nodes);
+		*/
 	}
 
 	uint32_t setSource(uint32_t nodeId, uint32_t addressId, uint32_t port) {
@@ -240,6 +299,7 @@ public:
 		Simulator::ScheduleWithContext (source->GetNode ()->GetId (), Seconds (2.0), &generateTraffic, source, randomSize, randomTime);
 	}
 
+	std::vector<Binding> bindings;
     ApplicationContainer servers;
 	std::vector<Ptr<Socket>> sockets;
 	Ipv4AddressHelper ipv4;
@@ -252,6 +312,13 @@ public:
 };
 
 int main(int argc, char** argv) {
+	bool doCsma = false;
+	CommandLine cmd;
+	cmd.AddValue("csma", "Use CSMA instead of Point-to-Point for connections", doCsma);
+	cmd.Parse(argc, argv);
+	//RngSeedManager::SetSeed(1);
+	Time::SetResolution(Time::Unit::US);
+
 	NetworkTopology topology = {
 		{0, 4, "5Mbps"},	// A <-> E
 		{1, 5, "5Mbps"},	// B <-> F
@@ -262,6 +329,14 @@ int main(int argc, char** argv) {
 		{6, 7, "10Mbps"},	// G <-> Server
 		{6, 8, "8Mbps"},	// G <-> Router
 	};
+
+	if(doCsma) {
+		std::cout << "Using CSMA...\n";
+		topology.installAsCsma();
+	} else {
+		std::cout << "Using PtP...\n";
+		topology.installAsPtp();
+	}
 
 	/*
 	 *  N Queues
@@ -342,6 +417,12 @@ int main(int argc, char** argv) {
 	topology.startSendingSomePackets(cSocketIndex, 0.0005, 100.);
 	topology.startSendingSomePackets(dSocketIndex, 0.001, 100.);
 
+	MobilityHelper help;
+	help.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+	help.InstallAll();
+
+	double simulationTime = 10.0;
+
 	AnimationInterface anim("out.xml");
 	anim.EnablePacketMetadata(true);
 	anim.SetConstantPosition(topology.nodes.Get(0), -100, -100);
@@ -354,7 +435,17 @@ int main(int argc, char** argv) {
 	anim.SetConstantPosition(topology.nodes.Get(7), 0, -100);
 	anim.SetConstantPosition(topology.nodes.Get(8), 100, -0);
 
-	double simulationTime = 10.0;
+	anim.UpdateNodeDescription(topology.nodes.Get(0), "A");
+	anim.UpdateNodeDescription(topology.nodes.Get(1), "B");
+	anim.UpdateNodeDescription(topology.nodes.Get(2), "C");
+	anim.UpdateNodeDescription(topology.nodes.Get(3), "D");
+	anim.UpdateNodeDescription(topology.nodes.Get(4), "E");
+	anim.UpdateNodeDescription(topology.nodes.Get(5), "F");
+	anim.UpdateNodeDescription(topology.nodes.Get(6), "G");
+	anim.UpdateNodeDescription(topology.nodes.Get(7), "Server");
+	anim.UpdateNodeDescription(topology.nodes.Get(8), "Router");
+	anim.EnableQueueCounters(Seconds(0), Seconds(simulationTime), Seconds(0.001));
+
 
 	AsciiTraceHelper asciiTraceHelper;
 	Ptr<OutputStreamWrapper> stream = asciiTraceHelper.CreateFileStream ("project_queue.tr");
@@ -364,16 +455,43 @@ int main(int argc, char** argv) {
 	}
 
 	Simulator::Stop(Seconds(simulationTime));
+	FlowMonitorHelper flowmon;
+	Ptr<FlowMonitor> monitor = flowmon.InstallAll();
+	/*
+	NodeContainer nodes;
+	nodes.Add(topology.nodes.Get(5));
+	nodes.Add(topology.nodes.Get(6));
+	Ptr<FlowMonitor> monitor = flowmon.Install(nodes);
+	*/
 	Simulator::Run();
+	auto stats = monitor->GetFlowStats();
+
+	std::cout << "Collected stats for " << stats.size() << " occurences\n";
+
+	auto nB = ++packetDistribution.begin();
+	auto nC = ++++packetDistribution.begin();
+
+	auto sumBandC = nB->second + nC->second;
+
+	const auto avgDelay = stats[6].delaySum / sumBandC / simulationTime; // Delay
+	std::cout << "F avgDelay: " << avgDelay << '\n';
+
+	for(const auto& i : packetDistribution) {
+		std::cout << i.first << ' ' << i.second << '\n';
+	}
 
 	Simulator::Destroy();
 
-	/*
-	for(uint32_t i = 0; i < topology.ipv4container.GetN();i++) {
-		std::cout << topology.ipv4container.GetAddress(i) << '\n';
-	}
-	*/
-
 	std::cout << globalSum << ' ' << globalN << '\n';
 	std::cout << static_cast<double>(globalSum) / static_cast<double>(globalN) << '\n';
+
+	/*
+	std::cout << "Sum of all enqueued:\n";
+	for(auto it = topology.qdiscs.Begin(); it != topology.qdiscs.End(); ++it) {
+		std::cout <<  std::distance(topology.qdiscs.Begin(), it) << ": " << (*it)->GetStats().nTotalEnqueuedPackets << '\n';
+		std::cout <<  std::distance(topology.qdiscs.Begin(), it) << ": " << (*it)->GetStats().nTotalDequeuedPackets << '\n';
+		//sum += (*it)->GetStats().nTotalEnqueuedPackets;
+	}
+	//std::cout << sum / globalN << '\n';
+	*/
 }
