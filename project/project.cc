@@ -58,13 +58,14 @@ void testPrng() {
 	std::vector<double> ourResults(n);
 
 	std::generate(ourResults.begin(), ourResults.end(), [&]() {
-		return expDist(normalize(lcg(), 0u, lcg.m), lambda);
-		//return expDist(lcg(), lambda);
+			//return normalize(lcg(), 0u, lcg.m);
+		return expDist(lcg(), lambda);
 	});
 
 	std::vector<double> theirResults(n);
 
 	std::generate(theirResults.begin(), theirResults.end(), [&]() {
+			//return urv->GetValue(0., 1.);
 		return erv->GetValue(1.0/lambda, 1.);
 	});
 
@@ -312,6 +313,9 @@ public:
 };
 
 int main(int argc, char** argv) {
+	testPrng();
+	return 0;
+	
 	bool doCsma = false;
 	CommandLine cmd;
 	cmd.AddValue("csma", "Use CSMA instead of Point-to-Point for connections", doCsma);
