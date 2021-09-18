@@ -117,6 +117,18 @@ static void receivedMsg (Ptr<Socket> router, Ptr<Socket> client, Ptr<const Packe
 	}
 }
 
+static void durationCallback(Ptr<OutputStreamWrapper> wrapper, Ptr< const Packet > packet, Ptr< NetDevice > txDevice, Ptr< NetDevice > rxDevice, Time duration, Time lastBitTime)
+{
+	*wrapper->GetStream() << duration.As(Time::MS) << '\n';
+}
+
+static void sojournCallback(Ptr<OutputStreamWrapper> wrapper, ns3::Time t)
+{
+
+    *wrapper->GetStream()<< t.As(Time::MS) << std::endl;
+
+}
+
 uint32_t globalN = 0; // hehe
 uint32_t globalSum = 0;
 
@@ -134,7 +146,8 @@ void tcPacketsInQueue (QueueDiscContainer qdiscs, Ptr<OutputStreamWrapper> strea
 	std::cout << currentSum << '\n';
 	*/
 
-	auto disc = qdiscs.Get(qdiscs.GetN() - 4);
+	//auto disc = qdiscs.Get(qdiscs.GetN() - 4);
+	auto disc = qdiscs.Get(0);
 	uint32_t currentSum = disc->GetNPackets();
 	//std::cout << currentSum << '\n';
 	globalSum += currentSum;
@@ -297,7 +310,7 @@ public:
 
 		auto source = sockets[socketId];
 
-		Simulator::ScheduleWithContext (source->GetNode ()->GetId (), Seconds (2.0), &generateTraffic, source, randomSize, randomTime);
+		Simulator::ScheduleWithContext (source->GetNode ()->GetId (), Seconds (1.0), &generateTraffic, source, randomSize, randomTime);
 	}
 
 	std::vector<Binding> bindings;
@@ -313,14 +326,14 @@ public:
 };
 
 int main(int argc, char** argv) {
-	testPrng();
-	return 0;
+	//testPrng();
+	//return 0;
 	
 	bool doCsma = false;
 	CommandLine cmd;
 	cmd.AddValue("csma", "Use CSMA instead of Point-to-Point for connections", doCsma);
 	cmd.Parse(argc, argv);
-	//RngSeedManager::SetSeed(1);
+	RngSeedManager::SetSeed(12);
 	Time::SetResolution(Time::Unit::US);
 
 	NetworkTopology topology = {
@@ -380,13 +393,6 @@ int main(int argc, char** argv) {
 	 */
 	
     uint16_t port_number = 9;  
-	/*
-    ApplicationContainer server_apps;
-	UdpServerHelper serverS (port_number);
-	server_apps.Add(serverS.Install(topology.nodes.Get(7)));
-
-	Ptr<UdpServer> S1 = serverS.GetServer();
-	*/
 
 	// Set up sources
 
@@ -413,6 +419,7 @@ int main(int argc, char** argv) {
 	auto routerSocket = topology.sockets[routerSocketIndex];
 	auto clientSocket = topology.sockets[clientSocketIndex];
 
+	// When server recieves a message
 	auto server = topology.servers.Get(4);
 	server->TraceConnectWithoutContext ("RxWithAddresses", MakeBoundCallback (&receivedMsg, routerSocket, clientSocket));
 
@@ -425,7 +432,7 @@ int main(int argc, char** argv) {
 	help.SetMobilityModel("ns3::ConstantPositionMobilityModel");
 	help.InstallAll();
 
-	double simulationTime = 10.0;
+	double simulationTime = 10.0+1.0; // +1 couse of warmup time.
 
 	AnimationInterface anim("out.xml");
 	anim.EnablePacketMetadata(true);
@@ -454,21 +461,40 @@ int main(int argc, char** argv) {
 	AsciiTraceHelper asciiTraceHelper;
 	Ptr<OutputStreamWrapper> stream = asciiTraceHelper.CreateFileStream ("project_queue.tr");
 
-	for (float t=1.0; t < simulationTime; t+=0.001) {
+	auto transmissionStreamFG = asciiTraceHelper.CreateFileStream("transmission_time_f_g.tr");
+	auto sojournStreamFG = asciiTraceHelper.CreateFileStream("sojourn_time_f_g.tr");
+	auto deviceF = topology.devices.Get(5);
+	auto queueF = topology.qdiscs.Get(10);
+	deviceF->GetChannel()->TraceConnectWithoutContext("TxRxPointToPoint", MakeBoundCallback(&durationCallback, transmissionStreamFG));
+	queueF->TraceConnectWithoutContext("SojournTime", MakeBoundCallback(&sojournCallback, sojournStreamFG));
+
+	auto transmissionStreamAS = asciiTraceHelper.CreateFileStream("transmission_time_a_s.tr");
+	auto sojournStreamAS = asciiTraceHelper.CreateFileStream("sojourn_time_s_a.tr");
+	auto deviceA = topology.devices.Get(0);
+	auto queueA = topology.qdiscs.Get(0);
+	deviceA->GetChannel()->TraceConnectWithoutContext("TxRxPointToPoint", MakeBoundCallback(&durationCallback, transmissionStreamAS));
+	queueA->TraceConnectWithoutContext("SojournTime", MakeBoundCallback(&sojournCallback, sojournStreamAS));
+
+	auto transmissionStreamSA = asciiTraceHelper.CreateFileStream("transmission_time_s_a.tr");
+	auto sojournStreamSA = asciiTraceHelper.CreateFileStream("sojourn_time_s_a.tr");
+	auto deviceS = topology.devices.Get(6);
+	auto queueS = topology.qdiscs.Get(12);
+	deviceA->GetChannel()->TraceConnectWithoutContext("TxRxPointToPoint", MakeBoundCallback(&durationCallback, transmissionStreamSA));
+	queueA->TraceConnectWithoutContext("SojournTime", MakeBoundCallback(&sojournCallback, sojournStreamSA));
+
+
+	//for (float t=1.0; t < simulationTime; t+=0.001) {
+	for (float t=1.0; t < simulationTime; t+=0.00001) {
 		Simulator::Schedule(Seconds(t), &tcPacketsInQueue, topology.qdiscs, stream);
 	}
 
 	Simulator::Stop(Seconds(simulationTime));
 	FlowMonitorHelper flowmon;
 	Ptr<FlowMonitor> monitor = flowmon.InstallAll();
-	/*
-	NodeContainer nodes;
-	nodes.Add(topology.nodes.Get(5));
-	nodes.Add(topology.nodes.Get(6));
-	Ptr<FlowMonitor> monitor = flowmon.Install(nodes);
-	*/
+
 	Simulator::Run();
 	auto stats = monitor->GetFlowStats();
+	auto probe = monitor->GetAllProbes();
 
 	std::cout << "Collected stats for " << stats.size() << " occurences\n";
 
@@ -485,6 +511,7 @@ int main(int argc, char** argv) {
 	}
 
 	Simulator::Destroy();
+	flowmon.SerializeToXmlFile("flowmon_stats.xml", false, false);
 
 	std::cout << globalSum << ' ' << globalN << '\n';
 	std::cout << static_cast<double>(globalSum) / static_cast<double>(globalN) << '\n';
