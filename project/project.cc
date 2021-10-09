@@ -12,7 +12,12 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <functional>
 #include <vector>
+
+bool doCustomPrng = false;
+
+using LcgFunc = std::function<double()>;
 
 using namespace ns3;
 
@@ -59,14 +64,16 @@ void testPrng() {
 
 	std::generate(ourResults.begin(), ourResults.end(), [&]() {
 			//return normalize(lcg(), 0u, lcg.m);
-		return expDist(lcg(), lambda);
+		return expDist(normalize(lcg(), 0u, lcg.m), lambda);
 	});
 
 	std::vector<double> theirResults(n);
 
+	erv->SetAttribute("Mean", DoubleValue(1./lambda));
 	std::generate(theirResults.begin(), theirResults.end(), [&]() {
 			//return urv->GetValue(0., 1.);
-		return erv->GetValue(1.0/lambda, 1.);
+			//return erv->GetValue(1.0/lambda, 1.);
+		return erv->GetValue();
 	});
 
 	{
@@ -134,36 +141,18 @@ uint32_t globalSum = 0;
 
 void tcPacketsInQueue (QueueDiscContainer qdiscs, Ptr<OutputStreamWrapper> stream)
 {
-	//Get current queue size value and save to file.
-	/*
-	uint32_t currentSum = 0;
-	for(uint32_t i = 0; i < qdiscs.GetN(); i++) {
-		Ptr<QueueDisc> p = qdiscs.Get (i);
-		uint32_t size = p->GetNPackets(); 
-		currentSum += size;
-		globalSum += size;
-	}
-	std::cout << currentSum << '\n';
-	*/
-
-	//auto disc = qdiscs.Get(qdiscs.GetN() - 4);
-	auto disc = qdiscs.Get(0);
+	auto disc = qdiscs.Get(qdiscs.GetN() - 4);
+	//auto disc = qdiscs.Get(0);
 	uint32_t currentSum = disc->GetNPackets();
 	//std::cout << currentSum << '\n';
 	globalSum += currentSum;
 	globalN++;
-	//std::cout << currentSum << '\n';
-	//auto stats = disc->GetStats();
-	//std::cout << "Enq: " << stats.nTotalEnqueuedPackets << " Deq: " << stats.nTotalDequeuedPackets << " Delta: " << stats.nTotalEnqueuedPackets - stats.nTotalDequeuedPackets << '\n';
-	//std::cout << "Turkmeck: " << (double)globalSum / (double)globalN << '\n';
-	//std::cout << globalSum << ' ' << globalN << '\n';
-
 	*stream->GetStream() << Simulator::Now().GetSeconds () << "\t" << currentSum << std::endl;
 }
 
-static void generateTraffic (Ptr<Socket> socket, Ptr<ExponentialRandomVariable> randomSize,	Ptr<ExponentialRandomVariable> randomTime)
+static void generateTraffic (Ptr<Socket> socket, Ptr<ExponentialRandomVariable> randomSize,	Ptr<ExponentialRandomVariable> randomTime, LcgFunc customRandomSize, LcgFunc customRandomTime)
 {
-	uint32_t pktSize = randomSize->GetInteger(); //Get random value for packet size
+	uint32_t pktSize = doCustomPrng ? customRandomSize() : randomSize->GetInteger(); //Get random value for packet size
 	//std::cout << "::::: A packet is generate at Node "<< socket->GetNode ()->GetId () << " with size " << pktSize <<" bytes ! Time:   " << Simulator::Now ().GetSeconds () << std::endl;
 
 	
@@ -174,8 +163,8 @@ static void generateTraffic (Ptr<Socket> socket, Ptr<ExponentialRandomVariable> 
 	
 	socket->Send(Create<Packet>(pktSize));
 
-	Time pktInterval = Seconds(randomTime->GetValue()); //Get random value for next packet generation time 
-	Simulator::Schedule(pktInterval, &generateTraffic, socket, randomSize, randomTime); //Schedule next packet generation
+	Time pktInterval = Seconds(doCustomPrng ? customRandomTime() : randomTime->GetValue()); //Get random value for next packet generation time 
+	Simulator::Schedule(pktInterval, &generateTraffic, socket, randomSize, randomTime, customRandomSize, customRandomTime); //Schedule next packet generation
 }
 
 class NetworkTopology {
@@ -252,6 +241,7 @@ public:
 			ipv4.SetBase(Ipv4Address((base + std::to_string(i) + end).c_str()), mask.c_str());
 			ipv4container.Add(ipv4.Assign({devices.Get(i*2), devices.Get(i*2+1)}));
 		}
+		std::cout << "Contains: " << ipv4container.GetN() << '\n';
 
 		Ipv4GlobalRoutingHelper::PopulateRoutingTables ();
 	}
@@ -297,7 +287,7 @@ public:
 		servers.Add(server.Install(nodes.Get(nodeId)));
 	}
 
-	void startSendingSomePackets(uint32_t socketId, double time, double size) {
+	void startSendingSomePackets(uint32_t socketId, double time, double size, LcgFunc customRandomSize, LcgFunc customRandomTime) {
 		//Mean inter-transmission time
 		Ptr<ExponentialRandomVariable> randomTime = CreateObject<ExponentialRandomVariable> ();
 		randomTime->SetAttribute ("Mean", DoubleValue (time));
@@ -310,7 +300,8 @@ public:
 
 		auto source = sockets[socketId];
 
-		Simulator::ScheduleWithContext (source->GetNode ()->GetId (), Seconds (1.0), &generateTraffic, source, randomSize, randomTime);
+
+		Simulator::ScheduleWithContext (source->GetNode ()->GetId (), Seconds (1.0), &generateTraffic, source, randomSize, randomTime, customRandomSize, customRandomTime);
 	}
 
 	std::vector<Binding> bindings;
@@ -329,12 +320,21 @@ int main(int argc, char** argv) {
 	//testPrng();
 	//return 0;
 	
+	uint32_t seed = 12;
 	bool doCsma = false;
 	CommandLine cmd;
 	cmd.AddValue("csma", "Use CSMA instead of Point-to-Point for connections", doCsma);
+	cmd.AddValue("seed", "Seed to use", seed);
+	cmd.AddValue("useCustomPrng", "Use custom prng instead of the ns3 version", doCustomPrng);
 	cmd.Parse(argc, argv);
-	RngSeedManager::SetSeed(12);
+
+	RngSeedManager::SetSeed(seed);
 	Time::SetResolution(Time::Unit::US);
+	std::cout << "Using seed: " << seed << '\n';
+
+	Lcg customRandomTime(seed, std::numeric_limits<Lcg::seed_t>::max());
+	customRandomTime.c = 0u;
+	Lcg customRandomSize = customRandomTime;
 
 	NetworkTopology topology = {
 		{0, 4, "5Mbps"},	// A <-> E
@@ -353,6 +353,12 @@ int main(int argc, char** argv) {
 	} else {
 		std::cout << "Using PtP...\n";
 		topology.installAsPtp();
+	}
+
+	if(doCustomPrng) {
+		std::cout << "Using custom prng...\n";
+	} else {
+		std::cout << "Using ns3 prng...\n";
 	}
 
 	/*
@@ -423,16 +429,46 @@ int main(int argc, char** argv) {
 	auto server = topology.servers.Get(4);
 	server->TraceConnectWithoutContext ("RxWithAddresses", MakeBoundCallback (&receivedMsg, routerSocket, clientSocket));
 
-	topology.startSendingSomePackets(aSocketIndex, 0.002, 100.);
-	topology.startSendingSomePackets(bSocketIndex, 0.002, 100.);
-	topology.startSendingSomePackets(cSocketIndex, 0.0005, 100.);
-	topology.startSendingSomePackets(dSocketIndex, 0.001, 100.);
+	auto funcCustomRandomTimeA = [&]() {
+		constexpr double time = 1./0.002;
+		return expDist(normalize(customRandomTime(), 0u, std::numeric_limits<Lcg::seed_t>::max()), time);
+		//return expDist(customRandomTime(), time);
+	};
+
+	auto funcCustomRandomTimeB = [&]() {
+		constexpr double time = 1./0.002;
+		return expDist(normalize(customRandomTime(), 0u, std::numeric_limits<Lcg::seed_t>::max()), time);
+		//return expDist(customRandomTime(), time);
+	};
+
+	auto funcCustomRandomTimeC = [&]() {
+		constexpr double time = 1./0.0005;
+		return expDist(normalize(customRandomTime(), 0u, std::numeric_limits<Lcg::seed_t>::max()), time);
+		//return expDist(customRandomTime(), time);
+	};
+
+	auto funcCustomRandomTimeD = [&]() {
+		constexpr double time = 1./0.001;
+		return expDist(normalize(customRandomTime(), 0u, std::numeric_limits<Lcg::seed_t>::max()), time);
+		//return expDist(customRandomTime(), time);
+	};
+
+	auto funcCustomRandomSize = [&]() {
+		constexpr double size = 1./100.;
+		return expDist(normalize(customRandomSize(), 0u, std::numeric_limits<Lcg::seed_t>::max()), size);
+		//return expDist(customRandomSize(), size);
+	};
+
+	topology.startSendingSomePackets(aSocketIndex, 0.002, 100., funcCustomRandomSize, funcCustomRandomTimeA);
+	topology.startSendingSomePackets(bSocketIndex, 0.002, 100., funcCustomRandomSize, funcCustomRandomTimeB);
+	topology.startSendingSomePackets(cSocketIndex, 0.0005, 100., funcCustomRandomSize, funcCustomRandomTimeC);
+	topology.startSendingSomePackets(dSocketIndex, 0.001, 100., funcCustomRandomSize, funcCustomRandomTimeD);
 
 	MobilityHelper help;
 	help.SetMobilityModel("ns3::ConstantPositionMobilityModel");
 	help.InstallAll();
 
-	double simulationTime = 10.0+1.0; // +1 couse of warmup time.
+	double simulationTime = 5.0+1.0; // +1 because of warmup time
 
 	AnimationInterface anim("out.xml");
 	anim.EnablePacketMetadata(true);
@@ -469,7 +505,7 @@ int main(int argc, char** argv) {
 	queueF->TraceConnectWithoutContext("SojournTime", MakeBoundCallback(&sojournCallback, sojournStreamFG));
 
 	auto transmissionStreamAS = asciiTraceHelper.CreateFileStream("transmission_time_a_s.tr");
-	auto sojournStreamAS = asciiTraceHelper.CreateFileStream("sojourn_time_s_a.tr");
+	auto sojournStreamAS = asciiTraceHelper.CreateFileStream("sojourn_time_a_s.tr");
 	auto deviceA = topology.devices.Get(0);
 	auto queueA = topology.qdiscs.Get(0);
 	deviceA->GetChannel()->TraceConnectWithoutContext("TxRxPointToPoint", MakeBoundCallback(&durationCallback, transmissionStreamAS));
@@ -479,8 +515,8 @@ int main(int argc, char** argv) {
 	auto sojournStreamSA = asciiTraceHelper.CreateFileStream("sojourn_time_s_a.tr");
 	auto deviceS = topology.devices.Get(6);
 	auto queueS = topology.qdiscs.Get(12);
-	deviceA->GetChannel()->TraceConnectWithoutContext("TxRxPointToPoint", MakeBoundCallback(&durationCallback, transmissionStreamSA));
-	queueA->TraceConnectWithoutContext("SojournTime", MakeBoundCallback(&sojournCallback, sojournStreamSA));
+	deviceS->GetChannel()->TraceConnectWithoutContext("TxRxPointToPoint", MakeBoundCallback(&durationCallback, transmissionStreamSA));
+	queueS->TraceConnectWithoutContext("SojournTime", MakeBoundCallback(&sojournCallback, sojournStreamSA));
 
 
 	//for (float t=1.0; t < simulationTime; t+=0.001) {
